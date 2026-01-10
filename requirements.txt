@@ -1,0 +1,17 @@
+# Google Photos API
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.110.0
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
+tqdm>=4.66.0
+
+# Date handling
+python-dateutil>=2.8.2
+
+# EXIF metadata handling
+Pillow>=10.0.0
+piexif>=1.1.3
+python-xmp-toolkit>=2.0.1  # XMP sidecars dla digiKam

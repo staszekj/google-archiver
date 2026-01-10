@@ -1,0 +1,21 @@
+# Credentials
+.env
+credentials.json
+token.pickle
+token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
