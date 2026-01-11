@@ -10,16 +10,86 @@
   - Geolokalizacja, albumy, opisy, dane kamery, wymiary, daty - wszystko!
 - ✅ Sprawdzamy które zdjęcia są w albumach (dla nazewnictwa plików + XMP tags)
 - ✅ Inkrementalna synchronizacja - pomijamy zdjęcia już skopiowane (nie zmieniają się)
-- ✅ Usuwanie z Google to ODDZIELNY proces (osobny krok/skrypt)
+- ✅ Usuwanie z Google to ODDZIELNY proces (osobny etap/skrypt)
   - Usuwane są TYLKO zdjęcia starsze niż 2 lata
   - Usuwane są TYLKO zdjęcia NIE będące w żadnym albumie
-  - Poprzedzone ZAWSZE dry-runem usuwania
+  - Poprzedzone ZAWSZE kalkulacją i oznaczeniem plików
 
 ---
 
-## Proces Główny: Archiwizacja
+## Przepływy Pracy
 
-### Krok 1: Uwierzytelnienie
+System obsługuje trzy niezależne procesy, które mogą być wykonywane alternatywnie:
+
+1. **Proces Główny (DEFAULT)** - `python main.py`
+   - Etapy 1-5: Backup, pobieranie i oznaczanie plików
+   - Wykonywany domyślnie
+
+2. **Usuwanie Flagi (OPCJONALNY)** - `python clear_marks.py`
+   - Czyści oznaczenia marked_for_deletion
+   - Wykonywany niezależnie, pomija Etapy 1-5
+
+3. **Usuwanie z Google Photos (OPCJONALNY)** - `python delete_from_google.py`
+   - Usuwa zdjęcia z Google Photos
+   - Wykonywany niezależnie, pomija Etapy 1-5
+
+---
+
+### Diagram Przepływów Pracy
+
+```
+GOOGLE PHOTOS ARCHIVER - PRZEPŁYWY PRACY
+│
+├── [PROCES 1] Główny (DEFAULT)
+│   │   Komenda: python main.py
+│   │
+│   ├── Etap 1: Uwierzytelnienie
+│   │
+│   ├── Etap 2: Przygotowanie Struktury
+│   │   ├── 2.1: Organizacja na Dysku
+│   │   └── 2.2: Utworzenie Bazy Metadanych
+│   │
+│   ├── Etap 3: Odczyt Meta Danych z Google
+│   │   ├── 3.1: Pobranie Metadanych Zdjęć
+│   │   ├── 3.2: Pobranie Albumów
+│   │   └── 3.3: Sprawdzenie Co Już Mamy
+│   │
+│   ├── Etap 4: Pobieranie Danych
+│   │   ├── 4.1: Pobieranie Zdjęć (batche 50 + XMP + commit)
+│   │   └── 4.2: Weryfikacja
+│   │
+│   └── Etap 5: Oznaczanie Plików do Usunięcia
+│       ├── 5a: Kalkulacja Usuwania (tylko raport)
+│       └── 5b: Oznaczenie Zdjęć (XMP + baza)
+│
+├── [PROCES 2] Usuwanie Flagi (OPCJONALNY)
+│   │   Komenda: python clear_marks.py
+│   │
+│   └── Czyszczenie oznaczeń marked_for_deletion
+│       ├── UPDATE photos SET marked_for_deletion = 0
+│       ├── Usunięcie tagów z Google Photos (opcjonalnie)
+│       └── Usunięcie marked_for_deletion.json
+│
+└── [PROCES 3] Usuwanie z Google Photos (OPCJONALNY)
+    │   Komenda: python delete_from_google.py
+    │
+    └── Usunięcie zdjęć z Google Photos
+        ├── Weryfikacja: marked_for_deletion = 1 + tag w XMP
+        ├── Usunięcie z Google (batche 50)
+        ├── Aktualizacja XMP (tag: DELETED_FROM_GOOGLE)
+        └── UPDATE photos SET deleted_from_google = 1
+```
+
+---
+
+### Proces 1: Główny (DEFAULT)
+**Komenda:** `python main.py`
+
+**Opis:** Backup wszystkich zdjęć z Google Photos + przygotowanie do usunięcia
+
+---
+
+#### Etap 1: Uwierzytelnienie
 **Cel:** Połączenie z Google Photos API
 
 **Działania:**
@@ -33,65 +103,12 @@
 
 ---
 
-### Krok 2: Pobranie Metadanych Zdjęć
-**Cel:** Znalezienie WSZYSTKICH zdjęć w Google Photos + PEŁNE metadane
+#### Etap 2: Przygotowanie Struktury
 
-**Wymaganie:** Pobrać WSZYSTKIE dostępne metadane z Google Photos API (bez wyjątków)
-
-**Działania:**
-- Paginacja przez wszystkie media items w Google Photos
-- BEZ filtrowania po dacie (bierzemy wszystko)
-- Zbieranie WSZYSTKICH metadanych:
-  - ID zdjęcia (unikalny)
-  - Nazwa pliku
-  - Data utworzenia
-  - Data dodania do Google Photos
-  - Rozmiar (w bajtach)
-  - URL do pobrania
-  - MIME type
-  - Wymiary (width x height)
-  - Geolokalizacja (jeśli dostępna)
-  - Opis/Caption (jeśli jest)
-  - Camera make/model (jeśli dostępne)
-  - Wszystkie inne pola z mediaMetadata API
-
-**Output:**
-- Lista zdjęć do archiwizacji
-- Format: `List[PhotoMetadata]`
-
----
-
-### Krok 2.3: Pobranie Albumów
-**Cel:** Znalezienie które zdjęcia są w albumach (dla nazewnictwa plików)
-
-**Działania:**
-- Pobierz listę wszystkich albumów
-- Dla każdego albumu pobierz listę zdjęć (media items)
-- Stwórz mapowanie: `photo_id -> album_name(s)`
-- Jedno zdjęcie może być w wielu albumach
-
-**Output:**
-- Słownik: `{photo_id: [album1, album2, ...]}`
-
----
-
-### Krok 2.5: Sprawdzenie Co Już Mamy
-**Cel:** Inkrementalna synchronizacja - pomiń już pobrane zdjęcia
-
-**Działania:**
-- Wczytaj `metadata/archive_index.json` (jeśli istnieje)
-- Porównaj ID/filename/rozmiar z Google Photos
-- Stwórz listę NOWYCH zdjęć do pobrania
-- Zdjęcia już na dysku = pomijamy (zakładamy że się nie zmieniają)
-
-**Output:**
-- Lista zdjęć już na dysku (skip)
-- Lista nowych zdjęć do pobrania
-
----
-
-### Krok 3: Organizacja na Dysku
+##### Etap 2.1: Organizacja na Dysku
 **Cel:** Płaska struktura na `/mnt/data/google-archiver/` zgodna z digiKam
+
+**Uwaga:** Jednorazowy zabieg - kolejne wywołania nie robią nic, bo struktura plików i baza już istnieją
 
 **Wymaganie kompatybilności:**
 - ✅ digiKam może zaimportować `photos/` folder bez problemów
@@ -141,7 +158,7 @@
 
 ---
 
-### Krok 3.5: Utworzenie Bazy Metadanych
+##### Etap 2.2: Utworzenie Bazy Metadanych
 **Cel:** SQLite database z pełnymi metadanymi dla szybkiego wyszukiwania
 
 **Schema SQLite:**
@@ -198,7 +215,68 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 
 ---
 
-### Krok 4: Pobieranie Zdjęć
+#### Etap 3: Odczyt Meta Danych z Google
+
+##### Etap 3.1: Pobranie Metadanych Zdjęć
+**Cel:** Znalezienie WSZYSTKICH zdjęć w Google Photos + PEŁNE metadane
+
+**Wymaganie:** Pobrać WSZYSTKIE dostępne metadane z Google Photos API (bez wyjątków)
+
+**Działania:**
+- Paginacja przez wszystkie media items w Google Photos
+- BEZ filtrowania po dacie (bierzemy wszystko)
+- Zbieranie WSZYSTKICH metadanych:
+  - ID zdjęcia (unikalny)
+  - Nazwa pliku
+  - Data utworzenia
+  - Data dodania do Google Photos
+  - Rozmiar (w bajtach)
+  - URL do pobrania
+  - MIME type
+  - Wymiary (width x height)
+  - Geolokalizacja (jeśli dostępna)
+  - Opis/Caption (jeśli jest)
+  - Camera make/model (jeśli dostępne)
+  - Wszystkie inne pola z mediaMetadata API
+
+**Output:**
+- Lista zdjęć do archiwizacji
+- Format: `List[PhotoMetadata]`
+
+---
+
+##### Etap 3.2: Pobranie Albumów
+**Cel:** Znalezienie które zdjęcia są w albumach (dla nazewnictwa plików)
+
+**Działania:**
+- Pobierz listę wszystkich albumów
+- Dla każdego albumu pobierz listę zdjęć (media items)
+- Stwórz mapowanie: `photo_id -> album_name(s)`
+- Jedno zdjęcie może być w wielu albumach
+
+**Output:**
+- Słownik: `{photo_id: [album1, album2, ...]}`
+
+---
+
+##### Etap 3.3: Sprawdzenie Co Już Mamy
+**Cel:** Inkrementalna synchronizacja - pomiń już pobrane zdjęcia
+
+**Działania:**
+- Wczytaj `metadata/archive_index.json` (jeśli istnieje)
+- Porównaj ID/filename/rozmiar z Google Photos
+- Stwórz listę NOWYCH zdjęć do pobrania
+- Zdjęcia już na dysku = pomijamy (zakładamy że się nie zmieniają)
+
+**Output:**
+- Lista zdjęć już na dysku (skip)
+- Lista nowych zdjęć do pobrania
+
+---
+
+#### Etap 4: Pobieranie Danych
+
+##### Etap 4.1: Pobieranie Zdjęć
 **Cel:** Download zdjęć na lokalny dysk z prawidłowymi metadanami
 
 **Działania:**
@@ -237,7 +315,7 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 
 ---
 
-### Krok 5: Weryfikacja
+##### Etap 4.2: Weryfikacja
 **Cel:** Upewnienie się, że wszystko zostało pobrane prawidłowo
 
 **Działania:**
@@ -251,9 +329,9 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 
 ---
 
-## Proces Dodatkowy: Usuwanie z Google (ODDZIELNY SKRYPT)
+#### Etap 5: Oznaczanie Plików do Usunięcia
 
-### Krok 6a: Dry-run Usuwania (Kalkulacja)
+##### Etap 5a: Kalkulacja Usuwania
 **Cel:** Kalkulacja ile miejsca zostanie odzyskane - TYLKO RAPORT
 
 **Kryteria usuwania:**
@@ -272,7 +350,7 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 
 **Output:**
 ```
-📊 Raport usuwania (dry-run - kalkulacja):
+📊 Raport usuwania (kalkulacja):
 - Zdjęć na Google (wszystkich): 28,543
 - Zdjęć starszych niż 2 lata: 18,234
 - Zdjęć w albumach (zachowane): 2,802
@@ -281,16 +359,16 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 - Miejsce do odzyskania: 87.5 GB
 - Zakres dat usuwanych: 2020-01-05 do 2024-01-09
 
-⚠️  Następny krok: --mark-for-deletion (oznacza zdjęcia)
+⚠️  Następny etap: Etap 5b (oznacza zdjęcia)
 ```
 
 ---
 
-### Krok 6b: Oznaczenie Zdjęć do Usunięcia
+##### Etap 5b: Oznaczenie Zdjęć do Usunięcia
 **Cel:** Oznaczenie zdjęć w bazie + XMP sidecars + OPCJONALNIE w Google Photos
 
 **Działania:**
-- Powtórz filtrowanie (jak w Krok 6a)
+- Powtórz filtrowanie (jak w Etap 5a)
 - **Przetwarzanie w batchach (50 zdjęć)** - synchronizacja XMP↔baza
 - Dla każdego batcha:
   1. **Operacje na plikach XMP:**
@@ -317,7 +395,7 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 - Lista zapisana w: metadata/marked_for_deletion.json
 
 ⚠️  Sprawdź listę, zweryfikuj w Google Photos (tag: MARKED_FOR_DELETION)
-⚠️  Następny krok: --delete-for-real (NIEODWRACALNE usunięcie)
+⚠️  Następny krok: python delete_from_google.py (NIEODWRACALNE usunięcie)
 ```
 
 **Bezpieczeństwo:**
@@ -326,25 +404,25 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 - ✅ Lista w JSON do manualnej weryfikacji
 ---
 
-### Krok 6c: Czyszczenie Flag (Rollback)
-**Cel:** Usunięcie oznaczeń `marked_for_deletion` - anulowanie Etapu 2
+### Proces 2: Usuwanie Flagi (OPCJONALNY)
+**Komenda:** `python clear_marks.py`
+
+**Opis:** Czyszczenie oznaczeń marked_for_deletion - anulowanie Etapu 5 z Procesu Głównego
+
+**Wykonywany:** Niezależnie, pomija Etapy 1-5
+**Cel:** Usunięcie oznaczeń `marked_for_deletion` - anulowanie Etapu 5
 
 **Kiedy użyć:**
-- ❌ Coś się rozjechało z dry-runem
+- ❌ Coś się rozjechało z oznaczaniem
 - ❌ Zmieniłeś zdanie
 - ❌ Pomyłka w kryteriach
-- ❌ Chcesz ponownie uruchomić Etap 2 z innymi parametrami
+- ❌ Chcesz ponownie uruchomić Etap 5 z innymi parametrami
 
 **Działania:**
 - Query: `UPDATE photos SET marked_for_deletion = 0, marked_for_deletion_at = NULL WHERE marked_for_deletion = 1`
 - **OPCJONALNIE:** Usuń tagi "MARKED_FOR_DELETION" z Google Photos
 - Usuń plik `metadata/marked_for_deletion.json`
 - Raport: ile flag wyczyszczono
-
-**Komenda:**
-```bash
-python delete.py --clear-marks
-```
 
 **Output:**
 ```
@@ -354,7 +432,7 @@ python delete.py --clear-marks
 - Tagi usunięte z Google Photos: 15,432 (opcjonalnie)
 - Plik marked_for_deletion.json usunięty
 
-✅ Możesz teraz ponownie uruchomić --mark-for-deletion
+✅ Możesz teraz ponownie uruchomić Etap 5b z Procesu Głównego
 ```
 
 **Bezpieczeństwo:**
@@ -363,18 +441,30 @@ python delete.py --clear-marks
 - ✅ Można używać wielokrotnie
 ---
 
-### Krok 7: Rzeczywiste Usuwanie
+### Proces 3: Usuwanie z Google Photos (OPCJONALNY)
+**Komenda:** `python delete_from_google.py`
+
+**Opis:** Usunięcie zdjęć z Google Photos (tylko te z flagą marked_for_deletion = 1)
+
+**Wykonywany:** Niezależnie, pomija Etapy 1-5
 **Cel:** Usunięcie zdjęć z Google Photos
 
+**Uwaga o sekwencyjnym uruchomieniu dwóch skryptów:**
+- Jeśli uruchomisz `clear_marks.py` przed `delete_from_google.py`:
+  - Usuwanie Flagi usunie wszystkie oznaczenia "do usunięcia"
+  - Następnie: `delete_from_google.py` nie znajdzie żadnych zdjęć z flagą `marked_for_deletion = 1`
+  - Rezultat: `delete_from_google.py` po prostu nic nie zrobi (bezpieczne zachowanie)
+- ✅ Jest to zamierzone i bezpieczne zachowanie - chroni przed przypadkowym usunięciem
+
 **Wymagania przed uruchomieniem:**
-- ✅ Krok 6b wykonany (`marked_for_deletion = 1` w bazie)
+- ✅ Etap 5b wykonany (`marked_for_deletion = 1` w bazie)
 - ✅ Lista `metadata/marked_for_deletion.json` istnieje
 - ✅ Użytkownik zweryfikował listę (opcjonalnie w Google Photos przez tag)
 
 **Kluczowa zasada:**
 - **Usuwamy TYLKO zdjęcia z flagą `marked_for_deletion = 1`**
 - **NIE sprawdzamy ponownie kryteriów** (wiek, albumy itp.)
-- **Ufamy flagom w bazie** - to co zostało oznaczone w Etapie 2
+- **Ufamy flagom w bazie** - to co zostało oznaczone w Etapie 5
 
 **Działania:**
 1. **Weryfikacja:**
@@ -424,10 +514,10 @@ python delete.py --clear-marks
 
 ## Statystyki i Raportowanie
 
-### Dry-run Report
+### Raport Kalkulacji
 ```json
 {
-  "mode": "dry-run",
+  "mode": "calculation",
   "date": "2026-01-10T20:53:00Z",
   "cutoff_date": null,
   
@@ -469,50 +559,55 @@ python delete.py --clear-marks
 
 ## Kolejność Wykonania
 
-### Backup Zdjęć (Fazy 1-2)
+### Proces Główny: Backup i Przygotowanie do Usuwania (DEFAULT)
 ```bash
-python main.py  # Bezpieczna operacja - tylko kopiowanie
+python main.py  # Bezpieczna operacja - backup + oznaczanie plików
 ```
-1. ✅ Uwierzytelnienie
-2. ✅ Pobranie metadanych WSZYSTKICH zdjęć
-3. ✅ Porównanie z tym co już jest na dysku (inkrementalne)
-4. ✅ Utworzenie struktury folderów
-5. ✅ Pobieranie nowych zdjęć (z progress bar)
-6. ✅ Weryfikacja
-7. ✅ Raport końcowy
 
-### Usuwanie z Google (Faza 3)
+**Kolejność etapów:**
+1. ✅ **Etap 1:** Uwierzytelnienie
+2. ✅ **Etap 2:** Utworzenie struktury folderów i bazy (jednorazowo)
+3. ✅ **Etap 3:** Pobranie metadanych WSZYSTKICH zdjęć i albumów z Google
+4. ✅ **Etap 3:** Porównanie z tym co już jest na dysku (inkrementalne)
+5. ✅ **Etap 4:** Pobieranie nowych zdjęć (z progress bar)
+6. ✅ **Etap 4:** Weryfikacja
+7. ✅ **Etap 5:** Kalkulacja i oznaczanie plików do usunięcia
+8. ✅ Raport końcowy
+
+### Usuwanie Flagi (OPCJONALNY)
 ```bash
-# Etap 1: Dry-run (tylko kalkulacja - BEZ zmian)
-python delete.py --dry-run
-# Przeanalizuj raport, sprawdź ile miejsca odzyskasz
+# Wykonywane NIEZALEŻNIE - pomija etapy 1-5
+python clear_marks.py
+# Czyści wszystkie flagi marked_for_deletion w bazie i XMP
+```
 
-# Etap 2: Oznaczenie do usunięcia (w bazie + opcjonalnie w Google)
-python delete.py --mark-for-deletion
-# Sprawdź listę w metadata/marked_for_deletion.json
-# OPCJONALNIE: Idź do Google Photos, filtruj po tagu "MARKED_FOR_DELETION", zweryfikuj
+**Kiedy użyć:**
+- Chcesz anulować oznaczenia do usunięcia
+- Pomyłka w kryteriach podczas Etapu 5
+- Chcesz ponownie uruchomić Etap 5 z innymi parametrami
 
-# OPCJONALNIE: Wycofanie oznaczeń (jeśli coś nie tak)
-python delete.py --clear-marks
-# Czyści wszystkie flagi marked_for_deletion, można powtórzyć Etap 2
+---
 
-# Etap 3: Faktyczne usunięcie z Google (NIEODWRACALNE)
-python delete.py --delete-for-real --confirm
+### Usuwanie z Google Photos (OPCJONALNY)
+```bash
+# Wykonywane NIEZALEŻNIE - pomija etapy 1-5
+python delete_from_google.py
+# Usuwa z Google Photos tylko zdjęcia z flagą marked_for_deletion = 1
 # Google Photos ma kosz (60 dni) - można odzyskać jeśli błąd
 ```
 
-**Kroki szczegółowe:**
-1. ✅ Weryfikacja że backup istnieje i jest kompletny
-2. ✅ Pobranie listy albumów z Google Photos
-3. ✅ Filtrowanie: starsze niż 2 lata + NIE w albumach
-4. ✅ **Etap 1:** Kalkulacja miejsca do odzyskania (dry-run)
-5. ✅ **Etap 2:** Oznaczenie w bazie (`marked_for_deletion = 1`)
-6. ✅ **Etap 2:** Opcjonalnie: tagowanie w Google Photos
-7. ✅ Zapisanie listy do `marked_for_deletion.json`
-8. ✅ Manualna weryfikacja przez użytkownika
-9. ❌ **Etap 3:** Usunięcie z Google Photos (po potwierdzeniu)
-10. ✅ **Etap 3:** Aktualizacja bazy (`deleted_from_google = 1`)
-11. ✅ Raport usunięcia
+**Wymagania:**
+- Etap 5 musi być wcześniej wykonany (pliki oznaczone `marked_for_deletion = 1`)
+- Lista `metadata/marked_for_deletion.json` musi istnieć
+
+**UWAGA: Bezpieczeństwo przy sekwencyjnym uruchomieniu:**
+```bash
+python clear_marks.py
+python delete_from_google.py
+# Jeśli uruchomisz clear_marks.py przed delete_from_google.py:
+# Usuwanie Flagi usunie oznaczenia, więc delete_from_google.py nic nie zrobi
+# Chroni przed przypadkowym usunięciem
+```
 
 ---
 
@@ -559,7 +654,7 @@ RATE_LIMIT_DELAY_MS=100
 - ✅ Metadata zapisana kompletnie
 - ✅ Suma rozmiarów zgadza się z Google Photos
 
-### Delete (dry-run i rzeczywiste):
+### Delete (kalkulacja i rzeczywiste usuwanie):
 - ✅ Miejsce odzyskane na Google Photos
 - ✅ Zdjęcia nadal dostępne lokalnie
 - ✅ Log wszystkich usuniętych plików
