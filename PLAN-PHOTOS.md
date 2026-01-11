@@ -449,13 +449,6 @@ CREATE INDEX idx_deleted_from_google ON photos(deleted_from_google);
 **Wykonywany:** Niezależnie, pomija Etapy 1-5
 **Cel:** Usunięcie zdjęć z Google Photos
 
-**Uwaga o sekwencyjnym uruchomieniu dwóch skryptów:**
-- Jeśli uruchomisz `clear_marks.py` przed `delete_from_google.py`:
-  - Usuwanie Flagi usunie wszystkie oznaczenia "do usunięcia"
-  - Następnie: `delete_from_google.py` nie znajdzie żadnych zdjęć z flagą `marked_for_deletion = 1`
-  - Rezultat: `delete_from_google.py` po prostu nic nie zrobi (bezpieczne zachowanie)
-- ✅ Jest to zamierzone i bezpieczne zachowanie - chroni przed przypadkowym usunięciem
-
 **Wymagania przed uruchomieniem:**
 - ✅ Etap 5b wykonany (`marked_for_deletion = 1` w bazie)
 - ✅ Lista `metadata/marked_for_deletion.json` istnieje
@@ -599,15 +592,6 @@ python delete_from_google.py
 **Wymagania:**
 - Etap 5 musi być wcześniej wykonany (pliki oznaczone `marked_for_deletion = 1`)
 - Lista `metadata/marked_for_deletion.json` musi istnieć
-
-**UWAGA: Bezpieczeństwo przy sekwencyjnym uruchomieniu:**
-```bash
-python clear_marks.py
-python delete_from_google.py
-# Jeśli uruchomisz clear_marks.py przed delete_from_google.py:
-# Usuwanie Flagi usunie oznaczenia, więc delete_from_google.py nic nie zrobi
-# Chroni przed przypadkowym usunięciem
-```
 
 ---
 
